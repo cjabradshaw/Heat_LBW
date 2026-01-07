@@ -27,7 +27,7 @@ suppressPackageStartupMessages(invisible(lapply(pkgs, library, character.only = 
 ## =========================
 ## Stage 0.1: CONFIG (v2)
 ## =========================
-base_dir <- "/path/to/your/project"   # <- user edits
+base_dir <- "/path/to/your/project"  
 
 dir_data_raw   <- file.path(base_dir, "data_raw")
 dir_data_proc  <- file.path(base_dir, "data_processed")
