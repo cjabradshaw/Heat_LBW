@@ -361,15 +361,16 @@ if (!"total_precipitation" %in% names(LBW_clean) && "precipitation" %in% names(L
 LBW_clean <- LBW_clean %>%
   arrange(province, date) %>%
   mutate(
-    scaled_tmean         = scale(tmean_C, center = TRUE, scale = TRUE),
-    scaled_humidity      = scale(humidity, center = TRUE, scale = TRUE),
-    scaled_precipitation = scale(total_precipitation, center = TRUE, scale = TRUE),
-    PM25_scaled          = scale(PM25, center = TRUE, scale = TRUE),
-    Education_prop_scaled    = scale(Education_prop, center = TRUE, scale = TRUE),
-    Wealth_Index_prop_scaled = scale(Wealth_Index_prop, center = TRUE, scale = TRUE),
-    Urban_prop_scaled        = scale(Urban_prop, center = TRUE, scale = TRUE),
-    Rural_prop_scaled        = scale(Rural_prop, center = TRUE, scale = TRUE)
-  )
+  scaled_tmean         = as.numeric(scale(tmean_C)),
+  scaled_humidity      = as.numeric(scale(humidity)),
+  scaled_precipitation = as.numeric(scale(total_precipitation)),
+  PM25_scaled          = as.numeric(scale(PM25)),
+  Education_prop_scaled    = as.numeric(scale(Education_prop)),
+  Wealth_Index_prop_scaled = as.numeric(scale(Wealth_Index_prop)),
+  Urban_prop_scaled        = as.numeric(scale(Urban_prop)),
+  Rural_prop_scaled        = as.numeric(scale(Rural_prop))
+)
+
 
 # (Optional) medians of scaled vars
 scaled_medians <- LBW_clean %>%
@@ -605,7 +606,11 @@ delta_poly <- aic_poly - min(aic_poly)
 w_poly <- exp(-0.5 * delta_poly) / sum(exp(-0.5 * delta_poly))
 
 nm <- names(poly_res[[1]]$pooled$coefs)
-stopifnot(all(vapply(poly_res, function(x) identical(names(x$pooled$coefs), nm), logical(1))))
+stopifnot(all(vapply(poly_res,
+                     function(x) identical(names(x$pooled$coefs),
+                                           names(poly_res[[1]]$pooled$coefs)),
+                     logical(1))))
+
 
 
 # (optional guard if any model failed)
@@ -795,7 +800,10 @@ hist_data <- LBW_clean %>%
   mutate(tmean_C_bin = cut(tmean_C, breaks = seq(min(tmean_C, na.rm = TRUE), max(tmean_C, na.rm = TRUE), by = 1))) %>%
   count(province, tmean_C_bin) %>%
   ungroup() %>%
-  mutate(tmean_C_mid = as.numeric(sub("\\((.+),.*", "\\1", as.character(tmean_C_bin))) + 0.5)
+  mutate(
+  tmean_C_mid = as.numeric(sub("^[\\[(]([^,]+),.*$", "\\1", as.character(tmean_C_bin))) + 0.5
+)
+
 
 combined_plots <- list()
 
@@ -1118,11 +1126,12 @@ compute_AF_for_dataset <- function(df, province_name, cb_pred, coefs, V,
   # HOT
   if (length(at_hot_scaled) > 0) {
     if (use_mvn) {
-      draws <- rmvnorm(n_mc, mean = coefs, sigma = V)
       sims <- apply(draws, 1, function(b) {
-        cp <- dlnm::crosspred(cb_pred, coef = b, vcov = V, at = at_hot_scaled, cen = cen_scaled)
-        af_from_cp(cp, prop_heat)
-      })
+  b <- stats::setNames(as.numeric(b), names(coefs))
+  cp <- dlnm::crosspred(cb_pred, coef = b, vcov = V, at = at_hot_scaled, cen = cen_scaled)
+  af_from_cp(cp, prop_heat)
+})
+
       heat_res <- c(
         AF  = mean(sims, na.rm = TRUE),
         LCI = unname(quantile(sims, 0.025, na.rm = TRUE, names = FALSE)),
@@ -1569,7 +1578,8 @@ missing_hvi <- setdiff(hvi_vars, names(merged_data))
 if (length(missing_hvi)) stop("Missing HVI columns: ", paste(missing_hvi, collapse = ", "))
 
 merged_data <- merged_data %>%
-  mutate(across(all_of(hvi_vars), ~ as.numeric(scale(.x)), .names = "z_{col}"))
+  mutate(across(all_of(hvi_vars), ~ as.numeric(scale(.x)), .names = "z_{.col}"))
+
 
 # Log-normal RR uncertainty (unchanged)
 set.seed(123)
