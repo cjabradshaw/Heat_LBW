@@ -11,7 +11,7 @@ Sys.setenv(TZ = "Australia/Sydney")
 pkgs <- c(
   "data.table","dplyr","tidyr","purrr","tibble","stringr",
   "lubridate","ggplot2","patchwork",
-  "mice","splines","dlnm","glmmTMB",
+  "mice","splines","dlnm","glmmTMB","multcomp",
   "sf","viridis",
   "DescTools","car","grid",
   "dagitty","ggdag","ggrepel",
@@ -41,6 +41,7 @@ dir.create(dir_figures,   showWarnings = FALSE, recursive = TRUE)
 
 path_lbw        <- file.path(dir_data_raw, "LBW_data.csv")
 path_population <- file.path(dir_data_raw, "population_data.csv")
+path_dist_births <- file.path(dir_data_raw, "dist_births_mor_mpi.csv")
 
 stopifnot(file.exists(path_lbw), file.exists(path_population))
 
@@ -207,7 +208,6 @@ ggsave("Supplementary_Figure_S1_DAG_temperature_LBW.pdf",  p, width = 7.6, heigh
 
 set.seed(123)
 
-
 # Load data
 LBW <- fread(path_lbw) %>%
   rename(province = Region)
@@ -291,7 +291,7 @@ if (!is.null(imputed$loggedEvents) && nrow(imputed$loggedEvents) > 0) {
   print(imputed$loggedEvents)
 }
 
-# Take one completed dataset
+# Take one completed dataset (you also pool in modeling below)
 LBW_clean_imputed <- complete(imputed, 1)
 
 # Safety net: recompute Rural deterministically & clamp
@@ -330,10 +330,11 @@ LBW_clean %>%
 # Stage 4: Merge precipitation and scale variables
 ############
 
+
 # Province-level precipitation
-path_precip <- file.path(dir_data_raw, "province_precipitation.csv")
+path_precip <- file.path(dir_data_raw, "province_precipitation.csv")  
 stopifnot(file.exists(path_precip))
-province_precipitation <- fread(path_precip, header = TRUE)
+province_precipitation <- fread(path_precip)
 province_precipitation$date <- as.Date(province_precipitation$date)
 province_precipitation$ADM1_EN <- as.factor(province_precipitation$ADM1_EN)
 
@@ -361,16 +362,15 @@ if (!"total_precipitation" %in% names(LBW_clean) && "precipitation" %in% names(L
 LBW_clean <- LBW_clean %>%
   arrange(province, date) %>%
   mutate(
-  scaled_tmean         = as.numeric(scale(tmean_C)),
-  scaled_humidity      = as.numeric(scale(humidity)),
-  scaled_precipitation = as.numeric(scale(total_precipitation)),
-  PM25_scaled          = as.numeric(scale(PM25)),
-  Education_prop_scaled    = as.numeric(scale(Education_prop)),
-  Wealth_Index_prop_scaled = as.numeric(scale(Wealth_Index_prop)),
-  Urban_prop_scaled        = as.numeric(scale(Urban_prop)),
-  Rural_prop_scaled        = as.numeric(scale(Rural_prop))
-)
-
+    scaled_tmean         = scale(tmean_C, center = TRUE, scale = TRUE),
+    scaled_humidity      = scale(humidity, center = TRUE, scale = TRUE),
+    scaled_precipitation = scale(total_precipitation, center = TRUE, scale = TRUE),
+    PM25_scaled          = scale(PM25, center = TRUE, scale = TRUE),
+    Education_prop_scaled    = scale(Education_prop, center = TRUE, scale = TRUE),
+    Wealth_Index_prop_scaled = scale(Wealth_Index_prop, center = TRUE, scale = TRUE),
+    Urban_prop_scaled        = scale(Urban_prop, center = TRUE, scale = TRUE),
+    Rural_prop_scaled        = scale(Rural_prop, center = TRUE, scale = TRUE)
+  )
 
 # (Optional) medians of scaled vars
 scaled_medians <- LBW_clean %>%
@@ -387,7 +387,7 @@ scaled_medians <- LBW_clean %>%
 print(scaled_medians)
 
 # Save clean dataset
-write.csv(LBW_clean, file.path(dir_outputs, "LBW_clean.csv"), row.names = FALSE)
+write.csv(LBW_clean, "LBW_clean.csv", row.names = FALSE)
 cat("The LBW_clean dataset has been successfully saved as 'LBW_clean.csv'.\n")
 
 # Ordinal encoding and quick checks
@@ -457,7 +457,7 @@ lag <- 7
 degree_exposure <- 2
 degree_lag <- 1
 
-# Crossbasis for pooled prediction
+# Crossbasis for pooled prediction (built on final LBW_clean)
 cb_for_pred_linear <- crossbasis(
   LBW_clean$scaled_tmean,
   lag = lag,
@@ -507,7 +507,7 @@ fit_one <- function(data_i, basis_type = c("linear","poly"), model_id = 2) {
     "0" = LBW_count ~ poly(PM25_scaled, 2) + ordered(Education) + ordered(Wealth_Index) +
       poly(Year, 3) + offset(log(WRA_pop)) + (1 | province),
     "1" = LBW_count ~ cb + poly(PM25_scaled, 2) + ordered(Education) + ordered(Wealth_Index) +
-    poly(Year, 3) + offset(log(WRA_pop)) + (1 | province),
+      poly(Year, 3) + offset(log(WRA_pop)) + (1 | province),
     "2" = LBW_count ~ cb + poly(PM25_scaled, 2) + ordered(Education) + ordered(Wealth_Index) +
       poly(Year, 3) + offset(log(WRA_pop)) + (1 | province),
     "3" = LBW_count ~ cb + poly(PM25_scaled, 2) + poly(scaled_humidity, 2) +
@@ -606,12 +606,10 @@ delta_poly <- aic_poly - min(aic_poly)
 w_poly <- exp(-0.5 * delta_poly) / sum(exp(-0.5 * delta_poly))
 
 nm <- names(poly_res[[1]]$pooled$coefs)
-stopifnot(all(vapply(poly_res,
-                     function(x) identical(names(x$pooled$coefs),
-                                           names(poly_res[[1]]$pooled$coefs)),
-                     logical(1))))
+stopifnot(all(vapply(poly_res, function(x) identical(names(x$pooled$coefs), nm), logical(1))))
 
-
+# ---- Model-averaged DLNM parameters (poly models only; same basis dimension)
+poly_res <- list(m2 = m2_res, m3 = m3_res, m4 = m4_res, m5 = m5_res)
 
 # (optional guard if any model failed)
 # poly_res <- Filter(function(x) !is.null(x$pooled), poly_res)
@@ -645,71 +643,85 @@ weighted_vcov <- V_within + V_between
 
 cat("\nWeighted Coefficients (poly models):\n"); print(weighted_coefs)
 cat("\nWeighted Variance-Covariance Matrix (poly models, unconditional):\n"); print(weighted_vcov)
+cat("\nWeighted Coefficients (poly models):\n"); print(weighted_coefs)
+cat("\nWeighted Variance-Covariance Matrix (poly models):\n"); print(weighted_vcov)
+
 
 ###############################################
 # Stage 6: Province-level RR curves (original °C output)
 ###############################################
 
-province_full_rr_results <- list()
+###############################################
+# Stage 6: Province-level RR curves (original °C output)
+###############################################
+
+province_full_rr_results       <- list()
 province_percentile_rr_results <- list()
+prov_medians                   <- list()
+
 provinces <- unique(LBW_clean$province)
 
-# scaling params (for °C conversion)
+# Scaling parameters for °C back-transformation
 mean_tmean <- attr(LBW_clean$scaled_tmean, "scaled:center")
 sd_tmean   <- attr(LBW_clean$scaled_tmean, "scaled:scale")
 
-prov_medians <- list()  # collect results here
-
-
 for (prov in provinces) {
+
   cat("\n--- Processing Province:", prov, "---\n")
+
   prov_data <- subset(LBW_clean, province == prov)
+
   median_tmean_prov <- median(prov_data$scaled_tmean, na.rm = TRUE)
+
   percentiles <- c(0.01, 0.10, 0.90, 0.99)
-  tmean_percentiles_scaled <- quantile(prov_data$scaled_tmean, probs = percentiles, na.rm = TRUE)
-  
+  tmean_percentiles_scaled <- quantile(prov_data$scaled_tmean,
+                                       probs = percentiles,
+                                       na.rm = TRUE)
+
   temp_seq_scaled <- seq(min(prov_data$scaled_tmean, na.rm = TRUE),
                          max(prov_data$scaled_tmean, na.rm = TRUE),
                          length.out = 100)
-  temp_seq_original <- temp_seq_scaled * sd_tmean + mean_tmean
-  
 
-  # inside the for (prov in provinces) loop, right after you define prov_data
+  temp_seq_original <- temp_seq_scaled * sd_tmean + mean_tmean
+
+  # Province median (scaled + raw) + sanity check
   median_tmean_prov_scaled <- median(prov_data$scaled_tmean, na.rm = TRUE)
   median_tmean_prov_C      <- median(prov_data$tmean_C,      na.rm = TRUE)
-  
-  # (sanity check: back-transform scaled median ≈ raw median)
-  stopifnot(isTRUE(all.equal(median_tmean_prov_C,
-                             median_tmean_prov_scaled * sd_tmean + mean_tmean,
-                             tolerance = 1e-8)))
-  
-  # use the scaled median for 'cen' (as you already do)
+
+  stopifnot(isTRUE(all.equal(
+    median_tmean_prov_C,
+    median_tmean_prov_scaled * sd_tmean + mean_tmean,
+    tolerance = 1e-8
+  )))
+
+  # Store medians for export
+  prov_medians[[prov]] <- data.frame(
+    Province              = prov,
+    Median_scaled_for_cen = median_tmean_prov_scaled,
+    Median_temperature_C  = median_tmean_prov_C
+  )
+
+  # Full RR curve across temperature sequence (centered at province median, scaled)
   pred_full <- crosspred(
     cb_for_pred_poly,
     coef = weighted_coefs,
     vcov = weighted_vcov,
     at   = temp_seq_scaled,
-    cen  = median_tmean_prov_scaled
+    cen  = median_tmean_prov
   )
-  
-  # store medians for export
-  prov_medians[[prov]] <- data.frame(
-    Province                 = prov,
-    Median_scaled_for_cen    = median_tmean_prov_scaled,
-    Median_temperature_C     = median_tmean_prov_C
-  )
-  
-  
+
   rr_full <- data.frame(
     Province    = prov,
     Temperature = temp_seq_original,
     Percentile  = ecdf(prov_data$tmean_C)(temp_seq_original),
-    RR  = exp(pred_full$allfit),
-    LCI = exp(pred_full$alllow),
-    UCI = exp(pred_full$allhigh)
+    RR          = exp(pred_full$allfit),
+    LCI         = exp(pred_full$alllow),
+    UCI         = exp(pred_full$allhigh)
   )
+
   province_full_rr_results[[prov]] <- rr_full
-  
+
+  # RR at selected percentiles (centered at province median, scaled)
   pred_percentiles <- crosspred(
     cb_for_pred_poly,
     coef = weighted_coefs,
@@ -717,63 +729,68 @@ for (prov in provinces) {
     at   = tmean_percentiles_scaled,
     cen  = median_tmean_prov
   )
-  
+
   tmean_percentiles_original <- tmean_percentiles_scaled * sd_tmean + mean_tmean
-  
+
   rr_at_percentiles <- data.frame(
     Province   = prov,
     Percentile = names(tmean_percentiles_scaled),
     tmean_C    = tmean_percentiles_original,
-    RR  = exp(pred_percentiles$allfit),
-    LCI = exp(pred_percentiles$alllow),
-    UCI = exp(pred_percentiles$allhigh)
+    RR         = exp(pred_percentiles$allfit),
+    LCI        = exp(pred_percentiles$alllow),
+    UCI        = exp(pred_percentiles$allhigh)
   )
+
   province_percentile_rr_results[[prov]] <- rr_at_percentiles
-  
+
   cat("\nFull Array Preview:\n"); print(head(rr_full))
   cat("\nSpecific Percentiles Preview:\n"); print(rr_at_percentiles)
 }
 
-all_full_rr_results        <- do.call(rbind, province_full_rr_results)
-all_percentile_rr_results  <- do.call(rbind, province_percentile_rr_results)
+all_full_rr_results       <- do.call(rbind, province_full_rr_results)
+all_percentile_rr_results <- do.call(rbind, province_percentile_rr_results)
 
 write.csv(
   all_full_rr_results,
-  file.path(dir_outputs, "Province_Specific_Temperature_RR_Full_Array_Scaled.csv"),
+  file = file.path(dir_outputs, "Province_Specific_Temperature_RR_Full_Array_Scaled.csv"),
   row.names = FALSE
 )
+
 write.csv(
   all_percentile_rr_results,
-  file.path(dir_outputs, "Province_Specific_Temperature_RR_Specific_Percentiles_Scaled.csv"),
+  file = file.path(dir_outputs, "Province_Specific_Temperature_RR_Specific_Percentiles_Scaled.csv"),
   row.names = FALSE
 )
 
-cat("Results saved in: ", dir_outputs, "\n", sep = "")
+cat("Results saved.\n")
 
-# save the medians you collected
 prov_medians_df <- do.call(rbind, prov_medians)
-write.csv(
-  prov_medians_df,
-  file.path(dir_outputs, "Province_Median_Temperature_Reference.csv"),
-  row.names = FALSE
-)
+# write.csv(prov_medians_df,
+#           file = file.path(dir_outputs, "Province_Median_Temperature_Reference.csv"),
+#           row.names = FALSE)
 
 # 90th percentile RR per province
 rr_90th_percentile <- all_percentile_rr_results %>%
   filter(Percentile == "90%") %>%
   dplyr::select(Province, RR, LCI, UCI)
+
 print(rr_90th_percentile)
+
 # 99th percentile RR per province
 rr_99th_percentile <- all_percentile_rr_results %>%
   filter(Percentile == "99%") %>%
   dplyr::select(Province, RR, LCI, UCI)
+
 print(rr_99th_percentile)
+
 write.csv(
   rr_99th_percentile,
-  file.path(dir_outputs, "Province_RR.csv"),
+  file = file.path(dir_outputs, "Province_RR.csv"),
   row.names = FALSE
 )
-cat("\nRR at the 99th percentile saved as 'Province_RR_99th_Percentile_Scaled.csv'.\n")
+
+cat("\nRR at the 99th percentile saved as 'Province_RR.csv'.\n")
+
 
 #####################
 # Stage 7: Province-level RR figure (curve + histogram)
@@ -800,10 +817,7 @@ hist_data <- LBW_clean %>%
   mutate(tmean_C_bin = cut(tmean_C, breaks = seq(min(tmean_C, na.rm = TRUE), max(tmean_C, na.rm = TRUE), by = 1))) %>%
   count(province, tmean_C_bin) %>%
   ungroup() %>%
-  mutate(
-  tmean_C_mid = as.numeric(sub("^[\\[(]([^,]+),.*$", "\\1", as.character(tmean_C_bin))) + 0.5
-)
-
+  mutate(tmean_C_mid = as.numeric(sub("\\((.+),.*", "\\1", as.character(tmean_C_bin))) + 0.5)
 
 combined_plots <- list()
 
@@ -848,6 +862,8 @@ for (prov in unique(all_full_rr_results$province)) {
 final_combined_plot <- wrap_plots(combined_plots, ncol = 2)
 ggsave("Figure1_Final_Province_ER_Curves_Scaled.png", final_combined_plot, width = 16, height = 12)
 print(final_combined_plot)
+
+
 
 # Small helper: build lines & ribbons on the ORIGINAL °C scale
 generate_plot_data <- function(cb, coefs, vcov, data, model_name, color_hex) {
@@ -940,14 +956,11 @@ combined_plot <- ggplot2::ggplot(plot_data, ggplot2::aes(x = Temperature, y = RR
 ggplot2::ggsave("Combined_Exposure_Response_Original_Scale_2025.png", combined_plot, width = 10, height = 8, dpi = 300)
 print(combined_plot)
 
+
 ## ===============================
 ## Stage 8: AF estimation & projections
 ## ===============================
 
-library(dplyr)
-library(tidyr)
-library(purrr)
-library(dlnm)
 
 # --- Safety checks
 stopifnot(exists("LBW_clean"), exists("all_full_rr_results"),
@@ -955,8 +968,6 @@ stopifnot(exists("LBW_clean"), exists("all_full_rr_results"),
 
 
 # --- READ climate projection files (make sure these paths match your files) ---
-library(data.table)
-library(lubridate)
 canonise_prov <- function(x) {
   xu <- toupper(trimws(as.character(x)))
   dplyr::recode(
@@ -1090,8 +1101,6 @@ simulate_af_log <- function(mu_log, se_log, pexp, n = 1000) {
 }
 
 
-library(mvtnorm)
-
 af_from_cp <- function(cp, prop, scale100 = TRUE) {
   rr <- exp(cp$allfit)
   af_day <- (rr - 1) / rr
@@ -1126,12 +1135,11 @@ compute_AF_for_dataset <- function(df, province_name, cb_pred, coefs, V,
   # HOT
   if (length(at_hot_scaled) > 0) {
     if (use_mvn) {
+      draws <- rmvnorm(n_mc, mean = coefs, sigma = V)
       sims <- apply(draws, 1, function(b) {
-  b <- stats::setNames(as.numeric(b), names(coefs))
-  cp <- dlnm::crosspred(cb_pred, coef = b, vcov = V, at = at_hot_scaled, cen = cen_scaled)
-  af_from_cp(cp, prop_heat)
-})
-
+        cp <- dlnm::crosspred(cb_pred, coef = b, vcov = V, at = at_hot_scaled, cen = cen_scaled)
+        af_from_cp(cp, prop_heat)
+      })
       heat_res <- c(
         AF  = mean(sims, na.rm = TRUE),
         LCI = unname(quantile(sims, 0.025, na.rm = TRUE, names = FALSE)),
@@ -1158,7 +1166,7 @@ compute_AF_for_dataset <- function(df, province_name, cb_pred, coefs, V,
         UCI = unname(quantile(sims, 0.975, na.rm = TRUE, names = FALSE))
       )
     } else {
-      pr_cold  <- safe_crosspred(cb_pred, coefs, V, at = at_cold_scaled, cen = cen_scaled)
+      pr_cold  := safe_crosspred(cb_pred, coefs, V, at = at_cold_scaled, cen = cen_scaled)
       cold_res <- simulate_af_log(pr_cold$allfit, pr_cold$allse, prop_cold, n_mc)
     }
   } else cold_res <- c(AF = 0, LCI = 0, UCI = 0)
@@ -1167,6 +1175,7 @@ compute_AF_for_dataset <- function(df, province_name, cb_pred, coefs, V,
     cold = cold_res
   ))
 }  
+
 
 # --- Baseline AF (now using MEDIAN °C threshold)
 baseline_AF <- bind_rows(lapply(unique(LBW_clean$province), function(prov) {
@@ -1277,13 +1286,12 @@ all_combined_af_results <- bind_rows(baseline_AF, proj_AF) %>%
 cat("AF calculation complete.\n")
 print(head(all_combined_af_results))
 
-## Save AF outputs
 
-# Output folder
+# 0) Output folder
 out_dir <- "outputs_af"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
-# Tidy + round for export
+# 1) Tidy + round for export
 round_cols <- c("AF_Heat","LCI_Heat","UCI_Heat",
                 "AF_Cold","LCI_Cold","UCI_Cold")
 
@@ -1296,12 +1304,12 @@ af_all <- all_combined_af_results %>%
   ) %>%
   relocate(Province, Period, Scenario)
 
-# Full table (heat + cold)
+# 2) Full table (heat + cold)
 write.csv(af_all,
           file.path(out_dir, "Combined_AF_Results.csv"),
           row.names = FALSE)
 
-# Heat-only table (like before)
+# 3) Heat-only table (like before)
 af_heat_only <- af_all %>%
   dplyr::select(Province, Period, Scenario,
                 AF_Heat, LCI_Heat, UCI_Heat)
@@ -1310,7 +1318,7 @@ write.csv(af_heat_only,
           file.path(out_dir, "Final_AF_Combined_Heat_Only.csv"),
           row.names = FALSE)
 
-# Optional: burden vs prevented fraction for heat
+# 4) Optional: burden vs prevented fraction for heat
 af_heat_bp <- af_all %>%
   mutate(
     AF_Heat_Burden = pmax(AF_Heat, 0),   # set negative AFs to 0 for burden
@@ -1322,7 +1330,7 @@ write.csv(af_heat_bp,
           file.path(out_dir, "AF_Heat_Burden_and_Prevented.csv"),
           row.names = FALSE)
 
-# Optional: versions excluding AJK
+# 5) Optional: versions excluding AJK
 af_all_noAJK <- af_all %>% filter(Province != "AJK")
 write.csv(af_all_noAJK,
           file.path(out_dir, "Combined_AF_Results_noAJK.csv"),
@@ -1335,11 +1343,9 @@ write.csv(af_heat_only_noAJK,
 
 cat("AF CSVs saved in: ", normalizePath(out_dir), "\n")
 
-# AF sensitivity analysis
-
 # --- Sensitivity: use MIN-RISK/MMT (from RR curves) as the heat/cold threshold ---
 
-# Build MMT/min-risk align table from the RR grid
+# 1) Build MMT/min-risk align table from the RR grid
 align_tbl_mmt <- rr_clean %>%
   dplyr::group_by(province) %>%
   dplyr::summarise(
@@ -1347,7 +1353,7 @@ align_tbl_mmt <- rr_clean %>%
     .groups = "drop"
   )
 
-# Helper (unchanged)
+# 2) Helper (unchanged)
 run_af_with_align <- function(align_tbl_in) {
   # Baseline
   base <- dplyr::bind_rows(lapply(unique(LBW_clean$province), function(prov) {
@@ -1411,13 +1417,8 @@ af_compare <- dplyr::left_join(
 
 print(af_compare)
 
-#ploting AF
 
-library(dplyr)
-library(ggplot2)
-library(patchwork)
-
-# Prep & relabel for plotting
+# --- 1) Prep & relabel for plotting
 af_df <- all_combined_af_results %>%
   mutate(
     Scenario = as.character(Scenario),
@@ -1455,7 +1456,7 @@ af_heat <- af_df %>%
     Label = sprintf("%.2f (%.2f, %.2f)", AF, LCI, UCI)
   )
 
-# Single-province plot helper (auto x-limits; labels to the right)
+# --- 2) Single-province plot helper (auto x-limits; labels to the right)
 plot_af_province <- function(prov, df = af_heat, which = c("Heat")){
   d <- df %>% filter(Province == prov)
   if (nrow(d) == 0) stop("No rows for province: ", prov)
@@ -1483,7 +1484,7 @@ plot_af_province <- function(prov, df = af_heat, which = c("Heat")){
           panel.grid.major.y = element_blank())
 }
 
-# Make the four-province panel (as before)
+# --- 3) Make the four-province panel (as before)
 p_baluchistan <- plot_af_province("Baluchistan")
 p_kpk         <- plot_af_province("KPK")
 p_punjab      <- plot_af_province("Punjab")
@@ -1493,7 +1494,7 @@ combined_plot <- (p_baluchistan / p_kpk / p_punjab / p_sindh) + plot_layout(heig
 ggsave("Figure2_proj_AF_plot_updated.png", combined_plot, width = 10, height = 12, dpi = 300)
 print(combined_plot)
 
-# (Optional) Faceted overview of all provinces at once
+# --- (Optional) Faceted overview of all provinces at once
 p_all <- ggplot(af_heat, aes(x = AF, y = Period_Scenario, color = Scenario)) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
   geom_errorbarh(aes(xmin = LCI, xmax = UCI), height = 0.20, size = 0.4) +
@@ -1511,6 +1512,7 @@ p_all <- ggplot(af_heat, aes(x = AF, y = Period_Scenario, color = Scenario)) +
 # ggsave("Figure2_proj_AF_all_provinces.png", p_all, width = 12, height = 10, dpi = 300)
 # print(p_all)
 
+
 ## ===============================
 ## Stage 9: Heat Vulnerability Index (HVI)
 ## ===============================
@@ -1520,19 +1522,20 @@ p_all <- ggplot(af_heat, aes(x = AF, y = Period_Scenario, color = Scenario)) +
 ## - Uses province-level RR at 99th percentile as susceptibility
 ############################################################
 
-## ---------------------------------------------------------
 ## 1) Load inputs
-## ---------------------------------------------------------
 
-# District-level exposures & sociodemographics (your prepared file)
-dist_births <- fread("/Users/fati0049/Desktop/My_data_2024/Research/Zohra1/Rcode/analysis/dist_births_mor_mpi.csv")
+# District-level exposures & sociodemographics
+path_dist_births <- file.path(dir_data_raw, "dist_births_mor_mpi.csv")
+stopifnot(file.exists(path_dist_births))
+
+dist_births <- data.table::fread(path_dist_births)
 
 # Province-level RR @ 99th percentile (from your main DLNM stage)
 # If the object doesn't already exist in memory, load the CSV we saved earlier.
 if (!exists("rr_99th_percentile")) {
-  if (file.exists("Province_RR.csv")) {
-    rr_99th_percentile <- read.csv("Province_RR.csv")
-  } else stop("rr_99th_percentile not in memory and 'Province_RR.csv' not found.")
+  if (file.exists("Province_RR_99th_Percentile_Celsius.csv")) {
+    rr_99th_percentile <- read.csv("Province_RR_99th_Percentile_Celsius.csv")
+  } else stop("rr_99th_percentile not in memory and 'Province_RR_99th_Percentile_Celsius.csv' not found.")
 }
 
 
@@ -1547,9 +1550,7 @@ columns_to_keep <- c(
 dist_births <- dist_births %>%
   dplyr::select(all_of(columns_to_keep))
 
-## ---------------------------------------------------------
 ## 2) Standardise province names on both sides before join
-## ---------------------------------------------------------
 
 # District data -> add standardised province
 dist_births_std <- dist_births %>%
@@ -1566,9 +1567,7 @@ if (nrow(merged_data) == 0) {
   stop("Join produced 0 rows. Check province names in dist_births and rr_99th_percentile.")
 }
 
-## ---------------------------------------------------------
 ## 3) Construct HVI (no double-counting; propagate RR uncertainty)
-## ---------------------------------------------------------
 
 # Choose HVI components:
 # - Use tmean (avg_tmean) as the heat hazard
@@ -1578,8 +1577,7 @@ missing_hvi <- setdiff(hvi_vars, names(merged_data))
 if (length(missing_hvi)) stop("Missing HVI columns: ", paste(missing_hvi, collapse = ", "))
 
 merged_data <- merged_data %>%
-  mutate(across(all_of(hvi_vars), ~ as.numeric(scale(.x)), .names = "z_{.col}"))
-
+  mutate(across(all_of(hvi_vars), ~ as.numeric(scale(.x)), .names = "z_{col}"))
 
 # Log-normal RR uncertainty (unchanged)
 set.seed(123)
@@ -1618,21 +1616,15 @@ merged_data$HVI_quintile <- dplyr::ntile(merged_data$mean_HVI, 5)
 hvi_data <- merged_data %>%
   dplyr::select(ADM2_EN, mean_HVI, HVI_LCI, HVI_UCI, HVI_quintile)
 
-write.csv(
-  hvi_data,
-  file.path(res_dir, "HVI_by_district.csv"),
-  row.names = FALSE
-)
+write.csv(hvi_data, "HVI_by_district.csv", row.names = FALSE)
 message("Saved: HVI_by_district.csv")
 
-## ---------------------------------------------------------
+
 ## 4) Map: merge with shapefiles and plot
-## ---------------------------------------------------------
 
 # District shapefile (ADM2)
-adm2_dir  <- file.path(base_dir, "pak_adm_wfp_20220909_shp")
-adm2_path <- file.path(adm2_dir, "pak_admbnda_adm2_wfp_20220909.shp")
-districts_shp <- st_read(adm2_path, quiet = TRUE)
+adm2_path <- file.path(dir_data_raw, "shapefiles", "ADM2", "pak_admbnda_adm2_wfp_20220909.shp")
+districts_shp <- sf::st_read(adm2_path, quiet = TRUE)
 
 # Merge HVI with districts
 district_data <- merge(districts_shp, hvi_data, by.x = "ADM2_EN", by.y = "ADM2_EN", all.x = TRUE)
@@ -1648,10 +1640,9 @@ cols_drop <- intersect(cols_drop, names(final_district_data))
 final_district_data <- final_district_data %>% dplyr::select(-all_of(cols_drop))
 
 # Province boundaries (ADM1) for overlay and labels
-adm_dir  <- file.path(base_dir, "pak_adm_wfp_20220909_shp")   # or your full folder path if not inside base_dir
-adm1_path <- file.path(adm_dir, "pak_admbnda_adm1_wfp_20220909.shp")
-adm2_path <- file.path(adm_dir, "pak_admbnda_adm2_wfp_20220909.shp")
-province_boundaries <- st_read(adm1_path, quiet = TRUE)
+adm1_path <- file.path(dir_data_raw, "shapefiles", "ADM1", "pak_admbnda_adm1_wfp_20220909.shp")
+province_boundaries <- sf::st_read(adm1_path, quiet = TRUE)
+
 
 # Province label positions (centroids)
 province_centroids <- province_boundaries %>%
@@ -1689,9 +1680,7 @@ hvi_plot <- ggplot(data = final_district_data) +
 ggsave("HVI_Map_Final.png", hvi_plot, width = 12, height = 8, dpi = 300)
 print(hvi_plot)
 
-## ---------------------------------------------------------
 ## 5) Optional: panel maps for environmental context (unchanged)
-## ---------------------------------------------------------
 
 plot_pm <- ggplot(final_district_data) +
   geom_sf(aes(fill = avg_pm)) +
@@ -1738,7 +1727,6 @@ bottom_panel <- (plot_pm + plot_precip + plot_births) /
 ggsave("Paneled_Environmental_Maps.png", bottom_panel, width = 18, height = 12, dpi = 300)
 
 #projected HVI
-
 ## ------------------------------------------------------------
 ## Projected HVI using province-level RR from projections
 ## Paste this AFTER your AF/RR pipeline and BEFORE HVI mapping.
@@ -1748,14 +1736,6 @@ ggsave("Paneled_Environmental_Maps.png", bottom_panel, width = 18, height = 12, 
 ##   - projection frames: prov_RCP4.5_48, prov_RCP8.5_48, prov_RCP4.5_68, prov_RCP8.5_68
 ##   - district frame: dist_births with ADM1_EN.x + HVI components (avg_tmean, avg_pm, IHME_LMICS, mpi, SUM)
 ## ------------------------------------------------------------
-
-
-# Projected HVI
-
-library(purrr)
-library(tidyr)
-library(stringr)
-library(readr)
 
 ## --- (A) Helpers -------------------------------------------------------------
 
@@ -1979,7 +1959,8 @@ readr::write_csv(HVI_proj_province, "Projected_HVI_by_Province.csv")
 
 cat("✓ Projected HVI tables written:\n  - Projected_HVI_by_District.csv\n  - Projected_HVI_by_Province.csv\n")
 
-proj_hvi <- readr::read_csv("Projected_HVI_by_District.csv")
+
+proj_hvi <- readr::read_csv(file.path(dir_data_proc, "Projected_HVI_by_District.csv"))
 
 districts_shp <- st_read(adm2_path, quiet = TRUE)  # same as earlier
 proj_map <- merge(districts_shp, proj_hvi, by.x = "ADM2_EN", by.y = "ADM2_EN", all.x = TRUE)
@@ -1991,19 +1972,18 @@ ggplot(proj_map) +
   labs(fill = "Projected HVI") +
   theme_minimal()
 
-#load necessary packages (if needed)
-library(readr)
-library(sf)
-library(ggplot2)
-library(viridis)
-library(forcats)
 
 # --- read baseline & projected ---
-base_hvi <- readr::read_csv("HVI_by_district.csv", show_col_types = FALSE) %>%
+base_hvi <- readr::read_csv(
+  file.path(dir_data_proc, "HVI_by_district.csv"),
+  show_col_types = FALSE
+) %>%
   dplyr::select(ADM2_EN, base_HVI = mean_HVI)
 
-proj_hvi <- readr::read_csv("Projected_HVI_by_District.csv",
-                            show_col_types = FALSE) %>%
+proj_hvi <- readr::read_csv(
+  file.path(dir_data_proc, "Projected_HVI_by_District.csv"),
+  show_col_types = FALSE
+) %>%
   mutate(
     Scenario = forcats::fct_relevel(Scenario, "SSP2-4.5", "SSP5-8.5"),
     Period   = forcats::fct_relevel(Period, "2048–2057", "2068–2077")
@@ -2048,7 +2028,14 @@ p_dHVI <- ggplot(map_delta) +
   facet_grid(Scenario ~ Period) +
   theme_white_facets
 
-ggsave("Projected_vs_Baseline_DeltaHVI.png", p_dHVI, width = 12, height = 8, dpi = 300)
+ggsave(
+  filename = file.path(dir_figures, "Projected_vs_Baseline_DeltaHVI.png"),
+  plot     = p_dHVI,
+  width    = 12,
+  height   = 8,
+  dpi      = 300
+)
+
 
 # (ii) Percent change map
 lims_p <- max(abs(range(map_delta$pct_change, na.rm = TRUE)))
@@ -2061,23 +2048,20 @@ p_pct <- ggplot(map_delta) +
   facet_grid(Scenario ~ Period) +
   theme_white_facets
 
-ggsave("Projected_vs_Baseline_PercentChange.png", p_pct, width = 12, height = 8, dpi = 300)
-
+ggsave(
+  filename = file.path(dir_figures, "Projected_vs_Baseline_PercentChange.png"),
+  plot     = p_pct,
+  width    = 12,
+  height   = 8,
+  dpi      = 300
+)
 p_dHVI; p_pct
+
 
 
 #############################
 # Stage 10: New Subgroup analysis via single interaction model + linear combos
 #############################
-
-library(dplyr)
-library(tidyr)
-library(glmmTMB)
-library(dlnm)
-library(purrr)
-library(car)
-library(multcomp)  
-
 
 # --- Settings (match main model) ---
 lag <- 7
