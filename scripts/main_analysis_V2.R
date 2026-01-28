@@ -199,8 +199,9 @@ p <- ggplot() +
         legend.title = element_text(face = "bold"))
 
 # Save
-ggsave("Supplementary_Figure_S1_DAG_temperature_LBW.png", p, width = 7.6, height = 4.8, dpi = 300)
-ggsave("Supplementary_Figure_S1_DAG_temperature_LBW.pdf",  p, width = 7.6, height = 4.8)
+ggsave(file.path(dir_figures, "Supplementary_Figure_S1_DAG_temperature_LBW.png"), p, width = 7.6, height = 4.8, dpi = 300)
+ggsave(file.path(dir_figures, "Supplementary_Figure_S1_DAG_temperature_LBW.pdf"),  p, width = 7.6, height = 4.8)
+
 
 #######################
 #Stage 2: Data analysis
@@ -387,7 +388,7 @@ scaled_medians <- LBW_clean %>%
 print(scaled_medians)
 
 # Save clean dataset
-write.csv(LBW_clean, "LBW_clean.csv", row.names = FALSE)
+write.csv(LBW_clean, file.path(dir_data_proc, "LBW_clean.csv"), row.names = FALSE)
 cat("The LBW_clean dataset has been successfully saved as 'LBW_clean.csv'.\n")
 
 # Ordinal encoding and quick checks
@@ -651,10 +652,6 @@ cat("\nWeighted Variance-Covariance Matrix (poly models):\n"); print(weighted_vc
 # Stage 6: Province-level RR curves (original °C output)
 ###############################################
 
-###############################################
-# Stage 6: Province-level RR curves (original °C output)
-###############################################
-
 province_full_rr_results       <- list()
 province_percentile_rr_results <- list()
 prov_medians                   <- list()
@@ -860,7 +857,7 @@ for (prov in unique(all_full_rr_results$province)) {
 }
 
 final_combined_plot <- wrap_plots(combined_plots, ncol = 2)
-ggsave("Figure1_Final_Province_ER_Curves_Scaled.png", final_combined_plot, width = 16, height = 12)
+ggsave(file.path(dir_figures, "Figure1_Final_Province_ER_Curves_Scaled.png"), final_combined_plot, width = 16, height = 12, dpi = 300)
 print(final_combined_plot)
 
 
@@ -953,7 +950,7 @@ combined_plot <- ggplot2::ggplot(plot_data, ggplot2::aes(x = Temperature, y = RR
   ggplot2::scale_fill_manual(values = cols) +
   ggplot2::theme_classic(base_size = 12)
 
-ggplot2::ggsave("Combined_Exposure_Response_Original_Scale_2025.png", combined_plot, width = 10, height = 8, dpi = 300)
+ggsave(file.path(dir_figures, "Combined_Exposure_Response_Original_Scale_2025.png"), combined_plot, width = 10, height = 8, dpi = 300)
 print(combined_plot)
 
 
@@ -1013,10 +1010,12 @@ read_proj <- function(path) {
 }
 
 # ==== EDIT THESE PATHS ====
-path_RCP45_48 <- "prov_RCP4.5_48.csv"
-path_RCP85_48 <- "prov_RCP8.5_48.csv"
-path_RCP45_68 <- "prov_RCP4.5_68.csv"
-path_RCP85_68 <- "prov_RCP8.5_68.csv"
+path_RCP45_48 <- file.path(dir_data_raw, "prov_RCP4.5_48.csv")
+path_RCP85_48 <- file.path(dir_data_raw, "prov_RCP8.5_48.csv")
+path_RCP45_68 <- file.path(dir_data_raw, "prov_RCP4.5_68.csv")
+path_RCP85_68 <- file.path(dir_data_raw, "prov_RCP8.5_68.csv")
+stopifnot(file.exists(path_RCP45_48), file.exists(path_RCP85_48), file.exists(path_RCP45_68), file.exists(path_RCP85_68))
+
 
 prov_RCP4.5_48 <- read_proj(path_RCP45_48)
 prov_RCP8.5_48 <- read_proj(path_RCP85_48)
@@ -1166,7 +1165,7 @@ compute_AF_for_dataset <- function(df, province_name, cb_pred, coefs, V,
         UCI = unname(quantile(sims, 0.975, na.rm = TRUE, names = FALSE))
       )
     } else {
-      pr_cold  := safe_crosspred(cb_pred, coefs, V, at = at_cold_scaled, cen = cen_scaled)
+      pr_cold  <- safe_crosspred(cb_pred, coefs, V, at = at_cold_scaled, cen = cen_scaled)
       cold_res <- simulate_af_log(pr_cold$allfit, pr_cold$allse, prop_cold, n_mc)
     }
   } else cold_res <- c(AF = 0, LCI = 0, UCI = 0)
@@ -1288,7 +1287,7 @@ print(head(all_combined_af_results))
 
 
 # 0) Output folder
-out_dir <- "outputs_af"
+out_dir <- file.path(dir_outputs, "outputs_af")
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 # 1) Tidy + round for export
@@ -1677,7 +1676,7 @@ hvi_plot <- ggplot(data = final_district_data) +
     panel.grid.minor = element_blank()
   )
 
-ggsave("HVI_Map_Final.png", hvi_plot, width = 12, height = 8, dpi = 300)
+ggsave(file.path(dir_figures, "HVI_Map_Final.png"), hvi_plot, width = 12, height = 8, dpi = 300)
 print(hvi_plot)
 
 ## 5) Optional: panel maps for environmental context (unchanged)
@@ -1724,9 +1723,9 @@ bottom_panel <- (plot_pm + plot_precip + plot_births) /
   (plot_tmean + plot_mpi + plot_deaths) +
   plot_annotation(tag_levels = "a")
 
-ggsave("Paneled_Environmental_Maps.png", bottom_panel, width = 18, height = 12, dpi = 300)
+ggsave(file.path(dir_figures, "Paneled_Environmental_Maps.png"), bottom_panel, width = 18, height = 12, dpi = 300)
 
-#projected HVI
+                            #projected HVI
 ## ------------------------------------------------------------
 ## Projected HVI using province-level RR from projections
 ## Paste this AFTER your AF/RR pipeline and BEFORE HVI mapping.
@@ -1945,7 +1944,7 @@ HVI_proj_list <- proj_rr_tbl_std %>%
   })
 
 HVI_proj_districts <- bind_rows(HVI_proj_list)
-readr::write_csv(HVI_proj_districts, "Projected_HVI_by_District.csv")
+readr::write.csv(hvi_data, file.path(dir_outputs, "HVI_by_district.csv"), row.names = FALSE)
 
 HVI_proj_province <- HVI_proj_districts %>%
   group_by(prov_std, Scenario, Period) %>%
@@ -1955,13 +1954,14 @@ HVI_proj_province <- HVI_proj_districts %>%
     HVI_UCI_pw  = weighted.mean(HVI_UCI,  w = SUM, na.rm = TRUE),
     .groups = "drop"
   )
-readr::write_csv(HVI_proj_province, "Projected_HVI_by_Province.csv")
+readr::write_csv(HVI_proj_province,  file.path(dir_data_proc, "Projected_HVI_by_Province.csv"))
+
 
 cat("✓ Projected HVI tables written:\n  - Projected_HVI_by_District.csv\n  - Projected_HVI_by_Province.csv\n")
 
 
 proj_hvi <- readr::read_csv(file.path(dir_data_proc, "Projected_HVI_by_District.csv"))
-
+                       
 districts_shp <- st_read(adm2_path, quiet = TRUE)  # same as earlier
 proj_map <- merge(districts_shp, proj_hvi, by.x = "ADM2_EN", by.y = "ADM2_EN", all.x = TRUE)
 
